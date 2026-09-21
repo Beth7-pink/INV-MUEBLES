@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>App Inventario Sillas</title>
+    <!-- Tailwind CSS para diseño moderno -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    
+    <script>
+        // ==========================================
+        // CONFIGURACIÓN: REEMPLAZA ESTA URL CON LA TUYA
+        // ==========================================
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzL8GOhjfbAXNwQuuXHJr0QkMoQftQlZmfJaWVfsCg5D54I29tL4kW-x-BqkUwRwHt3yg/exec";
+        
+        let inventarioGlobal = [];
+        let bajasGlobal = [];
+        let modoEdicionId = null;
+        let fotosSeleccionadas = []; // Almacenará las fotos de la galería o cámara
+
+        document.addEventListener("DOMContentLoaded", () => {
+            cargarDatos();
+        });
+
+        async function apiCall(action, payload = {}) {
+            try {
+                const response = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({ action, payload })
+                });
+                return await response.json();
+            } catch (error) {
+                console.error("Error en API:", error);
+                Swal.fire("Error", "Problema de conexión con la base de datos.", "error");
+            }
+        }
+
+        async function cargarDatos() {
+            mostrarCarga(true);
+            const data = await apiCall('getData');
+            if(data) {
+                inventarioGlobal = data.inventario;
+                bajasGlobal = data.bajas;
+                actualizarFiltroMaderas(data.maderas);
+                
+                // NO cargar registros automáticamente para evitar ralentizar la app
+                document.getElementById('grid-inventario').innerHTML = `
+                    <div class="col-span-full text-center text-gray-500 py-10">
+                        <i class="fa-solid fa-magnifying-glass text-4xl mb-3 text-gray-300 block"></i>
+                        Realiza una búsqueda para cargar el inventario.
+                    </div>`;
+            }
+            mostrarCarga(false);
+        }
+
+        function mostrarCarga(mostrar) {
+            document.getElementById('loader').style.display = mostrar ? 'flex' : 'none';
+        }
+
+        function cambiarModulo(modulo) {
+            document.getElementById('modulo-visualizador').classList.add('hidden');
+            document.getElementById('modulo-registro').classList.add('hidden');
+            
+            if(modulo === 'visualizador') {
+                document.getElementById('modulo-visualizador').classList.remove('hidden');
+                // No llamamos a cargarDatos() aquí para no hacer peticiones inútiles cada vez que navegamos
+            } else {
+                document.getElementById('modulo-registro').classList.remove('hidden');
+                limpiarFormulario();
+                document.getElementById('formTitle').innerText = 'Registrar Nuevo Producto';
+                modoEdicionId = null;
+                // Cargar fecha actual
+                document.getElementById('fecha').value = new Date().toISOString().split('T')[0];
+            }
+        }
+
+        // ================= VISUALIZADOR Y BÚSQUEDA =================
+        function renderizarInventario(datos, esBaja = false) {
+            const container = document.getElementById('grid-inventario');
+            container.innerHTML = '';
+            
+            if(datos.length === 0) {
+                container.innerHTML = `<div class="col-span-full text-center text-gray-500 py-10">No se encontraron resultados para tu búsqueda.</div>`;
+                return;
+            }
+
+            datos.forEach(item => {
+                const primeraFoto = item.F1 || 'https://via.placeholder.com/300?text=Sin+Foto';
+                const card = document.createElement('div');
+                card.className = `bg-white rounded-xl shadow-md overflow-hidden ${esBaja ? 'border-2 border-red-500 opacity-80' : ''}`;
+                
+                let htmlCard = `
+                    <div class="h-48 overflow-hidden relative">
+                        <img src="${primeraFoto}" class="w-full h-full object-cover" onclick="verDetalles(${item.ID}, ${esBaja})">
+                        ${esBaja ? '<span class="absolute top-2 right-2 bg-red-500 text-white px-2 py-1 rounded text-xs font-bold">NO DISPONIBLE</span>' : ''}
+                        <span class="absolute bottom-2 left-2 bg-black bg-opacity-70 text-white px-2 py-1 rounded text-xs">ID: ${item.ID}</span>
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-lg text-gray-800 uppercase">${item.NOMBRE}</h3>
+                        <div class="flex justify-between items-center mt-2">
+                            <span class="text-sm font-semibold text-gray-600"><i class="fa-solid fa-boxes-stacked"></i> Disp: ${item.CANTIDAD}</span>
+                            <span class="text-green-600 font-bold">$${item.PRECIO_MERCADO}</span>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1"><i class="fa-solid fa-tree"></i> ${item.MADERA}</p>
+                        
+                        ${!esBaja ? `
+                        <div class="mt-4 flex gap-2">
+                            <button onclick="verDetalles(${item.ID}, false)" class="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm shadow hover:bg-blue-700">Ver Detalles</button>
+                            <button onclick="prepararEdicion(${item.ID})" class="bg-amber-500 text-white px-3 py-2 rounded-lg shadow hover:bg-amber-600"><i class="fa-solid fa-pen"></i></button>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+                card.innerHTML = htmlCard;
+                container.appendChild(card);
+            });
+        }
+
+        function buscarProductos() {
+            mostrarCarga(true); // Pequeña espera visual
+            
+            setTimeout(() => {
+                const txt = document.getElementById('searchBox').value.toLowerCase();
+                const madera = document.getElementById('filterMadera').value.toLowerCase();
+                
+                let filtrados = inventarioGlobal.filter(item => {
+                    const matchTexto = item.NOMBRE.toLowerCase().includes(txt) || String(item.ID) === txt;
+                    const matchMadera = madera === '' || (item.MADERA && item.MADERA.toLowerCase() === madera);
+                    return matchTexto && matchMadera;
+                });
+                
+                if(filtrados.length > 0) {
+                    renderizarInventario(filtrados, false);
+                    document.getElementById('alerta-bajas').classList.add('hidden');
+                } else {
+                    // Si no hay en inventario, buscar en bajas
+                    let bajasFiltradas = bajasGlobal.filter(item => {
+                        const matchTexto = item.NOMBRE.toLowerCase().includes(txt) || String(item.ID) === txt;
+                        const matchMadera = madera === '' || (item.MADERA && item.MADERA.toLowerCase() === madera);
+                        return matchTexto && matchMadera;
+                    });
+                    
+                    if(bajasFiltradas.length > 0) {
+                        document.getElementById('alerta-bajas').classList.remove('hidden');
+                        renderizarInventario(bajasFiltradas, true);
+                    } else {
+                        document.getElementById('alerta-bajas').classList.add('hidden');
+                        renderizarInventario([]); // Mostrar mensaje de que no hay nada
+                    }
+                }
+                mostrarCarga(false);
+            }, 100);
+        }
+
+        // ================= CÁMARA Y BÚSQUEDA VISUAL =================
+        async function abrirCamaraBusqueda() {
+            const modal = document.getElementById('modalCamara');
+            const video = document.getElementById('videoPreview');
+            modal.classList.remove('hidden');
+            
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" } 
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                Swal.fire("Error", "No se pudo acceder a la cámara trasera.", "error");
+                cerrarCamaraBusqueda();
+            }
+        }
+
+        function cerrarCamaraBusqueda() {
+            const modal = document.getElementById('modalCamara');
+            const video = document.getElementById('videoPreview');
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+            modal.classList.add('hidden');
+        }
+
+        function tomarFotoYBuscar() {
+            const video = document.getElementById('videoPreview');
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            const fotoBase64 = canvas.toDataURL('image/jpeg', 0.6);
+            
+            cerrarCamaraBusqueda();
+            mostrarCarga(true);
+            
+            // Simular búsqueda IA
+            apiCall('searchImage', { image: fotoBase64 }).then(res => {
+                mostrarCarga(false);
+                if(res.resultados && res.resultados.length > 0) {
+                    Swal.fire("Resultados", "Se encontraron similitudes visuales", "success");
+                    renderizarInventario(res.resultados, false);
+                } else {
+                    Swal.fire("Sin resultados", "No se encontraron sillas similares.", "info");
+                }
+            });
+        }
+
+        // ================= MODAL DETALLES Y ZOOM =================
+        function verDetalles(id, esBaja) {
+            const item = (esBaja ? bajasGlobal : inventarioGlobal).find(i => i.ID === id);
+            if(!item) return;
+
+            const modal = document.getElementById('modalDetalles');
+            const contenedorFotos = document.getElementById('fotosDetalles');
+            contenedorFotos.innerHTML = '';
+
+            const fotos = [item.F1, item.F2, item.F3, item.F4, item.F5, item.F6, item.F7].filter(f => f && f.length > 10);
+            
+            if(fotos.length === 0) {
+                contenedorFotos.innerHTML = `<p class="text-center w-full py-10 text-gray-500">Sin fotos disponibles</p>`;
+            } else {
+                fotos.forEach(foto => {
+                    const img = document.createElement('img');
+                    img.src = foto;
+                    img.className = "w-full h-64 object-contain bg-black rounded snap-center shrink-0";
+                    img.onclick = () => {
+                        if(img.style.transform === "scale(2)") {
+                            img.style.transform = "scale(1)";
+                            img.style.zIndex = "1";
+                        } else {
+                            img.style.transform = "scale(2)";
+                            img.style.transition = "transform 0.3s";
+                            img.style.position = "relative";
+                            img.style.zIndex = "50";
+                        }
+                    };
+                    contenedorFotos.appendChild(img);
+                });
+            }
+
+            document.getElementById('detNombre').innerText = item.NOMBRE;
+            document.getElementById('detDatos').innerHTML = `
+                <p><strong>Cant:</strong> ${item.CANTIDAD}</p>
+                <p><strong>Medidas:</strong> ${item.MEDIDAS}</p>
+                <p><strong>Madera:</strong> ${item.MADERA}</p>
+                <p><strong>Tela:</strong> ${item.TELA}</p>
+                <p><strong>Precio Remate:</strong> $${item.PRECIO_REMATE}</p>
+                <p><strong>Precio Mercado:</strong> $${item.PRECIO_MERCADO}</p>
+                <p><strong>Fecha Reg:</strong> ${formatearFecha(item.FECHA)}</p>
+                <p class="col-span-full"><strong>Notas:</strong> ${item.NOTAS}</p>
+            `;
+
+            modal.classList.remove('hidden');
+        }
+
+        function cerrarDetalles() {
+            document.getElementById('modalDetalles').classList.add('hidden');
+        }
+
+        // ================= REGISTRO, EDICIÓN Y CÁMARA =================
+
+        function prepararEdicion(id) {
+            const item = inventarioGlobal.find(i => i.ID === id);
+            if(!item) return;
+
+            document.getElementById('modulo-visualizador').classList.add('hidden');
+            document.getElementById('modulo-registro').classList.remove('hidden');
+            limpiarFormulario(); // Limpiar antes de llenar
+
+            modoEdicionId = id;
+            document.getElementById('formTitle').innerText = 'Editar Registro: ' + id;
+            
+            document.getElementById('cantidad').value = item.CANTIDAD || '';
+            document.getElementById('nombre').value = item.NOMBRE || '';
+            document.getElementById('medidas').value = item.MEDIDAS || '';
+            document.getElementById('notas').value = item.NOTAS || '';
+            document.getElementById('tela').value = item.TELA || '';
+            document.getElementById('madera').value = item.MADERA || '';
+            document.getElementById('precioRemate').value = item.PRECIO_REMATE || '';
+            document.getElementById('precioMercado').value = item.PRECIO_MERCADO || '';
+            
+            if(item.FECHA) {
+                const dateObj = new Date(item.FECHA);
+                const año = dateObj.getFullYear();
+                const mes = String(dateObj.getMonth() + 1).padStart(2, '0');
+                const dia = String(dateObj.getDate()).padStart(2, '0');
+                document.getElementById('fecha').value = `${año}-${mes}-${dia}`;
+            }
+        }
+
+        // --- SISTEMA MULTI ARCHIVO (CÁMARA Y GALERÍA) ---
+        function manejarArchivos(files) {
+            for(let i = 0; i < files.length; i++) {
+                if(fotosSeleccionadas.length < 7) {
+                    fotosSeleccionadas.push(files[i]);
+                } else {
+                    Swal.fire("Límite alcanzado", "Solo puedes subir un máximo de 7 fotos por producto.", "warning");
+                    break;
+                }
+            }
+            renderPreviewFotos();
+            // Resetear inputs para permitir seleccionar la misma foto si se borró
+            document.getElementById('inputFotosGaleria').value = '';
+            document.getElementById('inputFotoCamara').value = '';
+        }
+
+        function renderPreviewFotos() {
+            const container = document.getElementById('previewFotos');
+            container.innerHTML = '';
+            
+            if(fotosSeleccionadas.length === 0) {
+                container.innerHTML = `<p class="text-xs text-gray-400 italic">No hay fotos seleccionadas</p>`;
+                return;
+            }
+
+            fotosSeleccionadas.forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    container.innerHTML += `
+                        <div class="relative min-w-[70px] w-[70px] h-[70px] bg-gray-200 rounded-lg flex-shrink-0 border border-gray-300">
+                            <img src="${e.target.result}" class="w-full h-full object-cover rounded-lg">
+                            <button type="button" onclick="eliminarFoto(${index})" class="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex justify-center items-center text-xs font-bold shadow-md hover:bg-red-600"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                    `;
+                }
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function eliminarFoto(index) {
+            fotosSeleccionadas.splice(index, 1);
+            renderPreviewFotos();
+        }
+
+        async function guardarRegistro(e) {
+            e.preventDefault();
+            mostrarCarga(true);
+            
+            const payload = {
+                id: modoEdicionId,
+                cantidad: document.getElementById('cantidad').value,
+                nombre: document.getElementById('nombre').value.toUpperCase(),
+                medidas: document.getElementById('medidas').value,
+                notas: document.getElementById('notas').value,
+                tela: document.getElementById('tela').value,
+                madera: document.getElementById('madera').value.toUpperCase(),
+                precioRemate: document.getElementById('precioRemate').value,
+                precioMercado: document.getElementById('precioMercado').value,
+                fecha: document.getElementById('fecha').value,
+            };
+
+            // Procesar fotos almacenadas en el array global
+            for(let i=0; i<Math.min(fotosSeleccionadas.length, 7); i++) {
+                payload[`foto${i+1}`] = await comprimirImagen(fotosSeleccionadas[i]);
+            }
+
+            const action = modoEdicionId ? 'update' : 'save';
+            const res = await apiCall(action, payload);
+            
+            mostrarCarga(false);
+            if(res && res.success) {
+                Swal.fire("Éxito", res.message, "success");
+                limpiarFormulario();
+                cambiarModulo('visualizador');
+                buscarProductos(); // Actualizar listado tras guardar
+            } else {
+                Swal.fire("Error", "No se pudo guardar la información.", "error");
+            }
+        }
+
+        function comprimirImagen(file) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = event => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const MAX_WIDTH = 800;
+                        const scaleSize = MAX_WIDTH / img.width;
+                        canvas.width = MAX_WIDTH;
+                        canvas.height = img.height * scaleSize;
+                        
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.5));
+                    };
+                };
+            });
+        }
+
+        function limpiarFormulario() {
+            document.getElementById('formRegistro').reset();
+            fotosSeleccionadas = [];
+            renderPreviewFotos();
+        }
+
+        function actualizarFiltroMaderas(maderasRegistradas) {
+            const selectFilter = document.getElementById('filterMadera');
+            let htmlOptions = '<option value="">Cualquier Madera</option>';
+            maderasRegistradas.forEach(m => {
+                htmlOptions += `<option value="${m.toLowerCase()}">${m}</option>`;
+            });
+            selectFilter.innerHTML = htmlOptions;
+
+            const datalist = document.getElementById('maderasPreCargadas');
+            const maderasConstantes = ["PINO", "TECA", "HAYA", "ENCINO", "FRESNO", "CAOBA"];
+            const opcionesParaRegistro = [...new Set([...maderasConstantes, ...maderasRegistradas])];
+            
+            datalist.innerHTML = '';
+            opcionesParaRegistro.forEach(m => {
+                datalist.innerHTML += `<option value="${m}">`;
+            });
+        }
+
+        function formatearFecha(cadena) {
+            if(!cadena) return '';
+            const d = new Date(cadena);
+            return d.toLocaleDateString('es-MX');
+        }
+    </script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans pb-20">
+
+    <!-- Loader -->
+    <div id="loader" class="fixed inset-0 bg-black bg-opacity-60 z-50 hidden flex-col justify-center items-center text-white">
+        <i class="fa-solid fa-spinner fa-spin text-5xl mb-4"></i>
+        <p class="font-bold text-lg">Procesando...</p>
+    </div>
+
+    <!-- Navegación Inferior -->
+    <nav class="fixed bottom-0 w-full bg-white shadow-[0_-2px_10px_rgba(0,0,0,0.1)] z-40 flex justify-around p-3">
+        <button onclick="cambiarModulo('visualizador')" class="flex flex-col items-center text-blue-600">
+            <i class="fa-solid fa-layer-group text-2xl"></i>
+            <span class="text-xs font-bold mt-1">Inventario</span>
+        </button>
+        <button onclick="cambiarModulo('registro')" class="flex flex-col items-center text-gray-500 hover:text-blue-600">
+            <i class="fa-solid fa-circle-plus text-2xl"></i>
+            <span class="text-xs font-bold mt-1">Nuevo</span>
+        </button>
+    </nav>
+
+    <!-- ================= MODULO 1: VISUALIZADOR ================= -->
+    <div id="modulo-visualizador" class="p-4 max-w-4xl mx-auto">
+        <h1 class="text-2xl font-black text-center text-gray-800 mb-6">Inventario Sillas</h1>
+        
+        <!-- Controles de Búsqueda (Cambiado a Manual) -->
+        <div class="bg-white p-4 rounded-xl shadow-sm mb-6 flex flex-col gap-3">
+            <div class="flex gap-2">
+                <input type="text" id="searchBox" placeholder="Buscar nombre o ID..." class="w-full bg-gray-100 border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button onclick="buscarProductos()" class="bg-blue-600 text-white px-4 rounded-lg shadow font-bold hover:bg-blue-700 whitespace-nowrap">
+                    <i class="fa-solid fa-magnifying-glass"></i> Buscar
+                </button>
+                <button onclick="abrirCamaraBusqueda()" class="bg-indigo-600 text-white px-4 rounded-lg shadow hover:bg-indigo-700">
+                    <i class="fa-solid fa-camera"></i>
+                </button>
+            </div>
+            <select id="filterMadera" class="w-full bg-gray-100 border border-gray-200 rounded-lg px-4 py-2">
+                <option value="">Cualquier Madera</option>
+            </select>
+        </div>
+
+        <div id="alerta-bajas" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4 text-sm text-center font-bold">
+            No hay piezas disponibles en inventario (Mostrando resultados de Bajas)
+        </div>
+
+        <!-- Grid de Tarjetas -->
+        <div id="grid-inventario" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5">
+            <!-- Tarjetas inyectadas vía JS -->
+        </div>
+    </div>
+
+    <!-- ================= MODULO 2: REGISTRO/EDICION ================= -->
+    <div id="modulo-registro" class="hidden p-4 max-w-lg mx-auto">
+        
+        <!-- Encabezado con Botón Regresar -->
+        <div class="flex items-center mb-6">
+            <button type="button" onclick="cambiarModulo('visualizador')" class="bg-white border border-gray-300 text-gray-700 w-10 h-10 rounded-lg shadow-sm hover:bg-gray-100 flex justify-center items-center">
+                <i class="fa-solid fa-arrow-left"></i>
+            </button>
+            <h1 id="formTitle" class="text-xl font-black text-center text-gray-800 flex-1">Registrar Nuevo</h1>
+            <div class="w-10"></div> <!-- Espaciador para centrar título -->
+        </div>
+        
+        <form id="formRegistro" onsubmit="guardarRegistro(event)" class="bg-white p-5 rounded-xl shadow-md flex flex-col gap-4">
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-xs font-bold text-gray-500">Cantidad Disp.</label>
+                    <input type="number" id="cantidad" required class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300">
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-500">Fecha</label>
+                    <input type="date" id="fecha" required class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300">
+                </div>
+            </div>
+
+            <div>
+                <label class="text-xs font-bold text-gray-500">Nombre del Mueble</label>
+                <input type="text" id="nombre" required class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300 uppercase">
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-xs font-bold text-gray-500">Madera</label>
+                    <input type="text" id="madera" list="maderasPreCargadas" required class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300 uppercase">
+                    <datalist id="maderasPreCargadas"></datalist>
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-500">Tela</label>
+                    <input type="text" id="tela" class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300">
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-xs font-bold text-gray-500">Precio Remate</label>
+                    <input type="number" step="0.01" id="precioRemate" class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300">
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-500">Precio Mercado</label>
+                    <input type="number" step="0.01" id="precioMercado" class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300">
+                </div>
+            </div>
+
+            <div>
+                <label class="text-xs font-bold text-gray-500">Medidas</label>
+                <input type="text" id="medidas" class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300">
+            </div>
+
+            <div>
+                <label class="text-xs font-bold text-gray-500">Notas/Observaciones</label>
+                <textarea id="notas" rows="2" class="w-full bg-gray-100 p-3 rounded-lg border-b-2 border-gray-300"></textarea>
+            </div>
+
+            <!-- ÁREA MEJORADA DE FOTOS (Cámara y Galería) -->
+            <div class="bg-blue-50 p-4 rounded-xl border border-blue-200 shadow-inner">
+                <label class="text-sm font-bold text-blue-800 block mb-3"><i class="fa-solid fa-photo-film"></i> Cargar Imágenes (Máx 7)</label>
+                
+                <div class="flex gap-2 mb-3">
+                    <button type="button" onclick="document.getElementById('inputFotosGaleria').click()" class="bg-blue-600 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-blue-700 flex-1 flex justify-center items-center gap-2">
+                        <i class="fa-regular fa-image"></i> Galería
+                    </button>
+                    <button type="button" onclick="document.getElementById('inputFotoCamara').click()" class="bg-green-600 text-white font-bold px-3 py-2 rounded-lg shadow-md hover:bg-green-700 flex-1 flex justify-center items-center gap-2">
+                        <i class="fa-solid fa-camera"></i> Cámara
+                    </button>
+                </div>
+
+                <!-- Inputs ocultos para capturar archivos -->
+                <input type="file" id="inputFotosGaleria" accept="image/*" multiple class="hidden" onchange="manejarArchivos(this.files)">
+                <!-- El atributo capture="environment" obliga a abrir la cámara trasera en móviles -->
+                <input type="file" id="inputFotoCamara" accept="image/*" capture="environment" class="hidden" onchange="manejarArchivos(this.files)">
+                
+                <!-- Área donde se mostrarán las miniaturas -->
+                <div id="previewFotos" class="flex gap-3 overflow-x-auto py-2 px-1 mt-2 no-scrollbar min-h-[80px] items-center bg-white rounded-lg border border-blue-100">
+                    <p class="text-xs text-gray-400 italic px-2">No hay fotos seleccionadas</p>
+                </div>
+                
+                <p class="text-[11px] text-blue-600 mt-2 font-semibold">Nota: Si editas un producto y no subes fotos, se mantendrán las que ya tenía.</p>
+            </div>
+
+            <button type="submit" class="bg-blue-700 text-white font-black text-lg py-4 rounded-xl mt-4 shadow-xl hover:bg-blue-800 transform active:scale-95 transition-all">
+                Guardar Producto
+            </button>
+        </form>
+    </div>
+
+    <!-- ================= MODAL CÁMARA BÚSQUEDA ================= -->
+    <div id="modalCamara" class="fixed inset-0 bg-black z-50 hidden flex flex-col">
+        <div class="p-4 flex justify-between items-center text-white bg-gray-900">
+            <h3 class="font-bold">Búsqueda Visual</h3>
+            <button onclick="cerrarCamaraBusqueda()" class="text-2xl w-10 h-10 flex justify-center items-center"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="flex-1 bg-black flex justify-center items-center overflow-hidden">
+            <video id="videoPreview" class="min-w-full min-h-full object-cover" autoplay playsinline></video>
+        </div>
+        <div class="bg-gray-900 p-6 flex justify-center pb-10">
+            <button onclick="tomarFotoYBuscar()" class="bg-white rounded-full w-20 h-20 flex justify-center items-center shadow-[0_0_0_5px_rgba(255,255,255,0.3)] hover:scale-105 active:scale-95 transition">
+                <div class="bg-gray-200 rounded-full w-16 h-16"></div>
+            </button>
+        </div>
+    </div>
+
+    <!-- ================= MODAL DETALLES ================= -->
+    <div id="modalDetalles" class="fixed inset-0 bg-black bg-opacity-80 z-50 hidden flex justify-center items-center p-4">
+        <div class="bg-white rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto relative">
+            <button onclick="cerrarDetalles()" class="absolute top-3 right-3 bg-red-500 text-white w-8 h-8 rounded-full flex justify-center items-center z-10 shadow-md">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            
+            <div id="fotosDetalles" class="flex overflow-x-auto snap-x snap-mandatory no-scrollbar bg-gray-100">
+                <!-- Fotos inyectadas -->
+            </div>
+            <p class="text-[10px] text-center text-gray-500 py-1 bg-gray-100">Desliza para ver más fotos. Toca la foto para ampliar.</p>
+
+            <div class="p-5">
+                <h2 id="detNombre" class="text-2xl font-black text-gray-800 mb-4 uppercase"></h2>
+                <div id="detDatos" class="grid grid-cols-2 gap-4 text-sm text-gray-700 bg-gray-50 p-4 rounded-lg">
+                    <!-- Datos inyectados -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
