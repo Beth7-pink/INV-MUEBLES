@@ -21,6 +21,19 @@
 
         const MAX_FOTOS = 7;
 
+        // ==========================================
+        // CALIDAD DE LAS FOTOS AL SUBIRLAS A DRIVE
+        // original: true  -> sube el archivo tal cual lo tomó la cámara (máxima calidad,
+        //                    pesa 3 a 10 MB por foto y sube más lento). Solo JPG/PNG de hasta 12 MB;
+        //                    si no cumple, se usa la compresión de abajo.
+        // maxLado:  píxeles del lado más largo (3000 = muy alta; 4000 = casi original)
+        // calidad:  0 a 1 (0.95 = casi sin pérdida visible)
+        // ==========================================
+        const CALIDAD_FOTO = { original: false, maxLado: 3000, calidad: 0.95 };
+
+        // Calidad de las fotos dentro del PDF (más alto = PDF más pesado)
+        const CALIDAD_PDF = { maxLado: 2000, calidad: 0.92 };
+
         // Imagen de relleno cuando no hay foto (no depende de sitios externos)
         const SIN_FOTO = 'data:image/svg+xml;utf8,' + encodeURIComponent(
             '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#e5e7eb"/><text x="150" y="155" font-family="Arial" font-size="20" fill="#9ca3af" text-anchor="middle">Sin foto</text></svg>'
@@ -144,7 +157,7 @@
             }
 
             datos.forEach(item => {
-                const primeraFoto = urlImagen(item.F1, 600);
+                const primeraFoto = urlImagen(item.F1, 900);
                 const card = document.createElement('div');
                 card.className = `bg-white rounded-xl shadow-md overflow-hidden ${esBaja ? 'border-2 border-red-500 opacity-80' : ''}`;
 
@@ -283,7 +296,7 @@
             } else {
                 fotos.forEach(foto => {
                     const img = document.createElement('img');
-                    img.src = urlImagen(foto, 1200);
+                    img.src = urlImagen(foto, 2000);
                     img.onerror = () => { img.onerror = null; img.src = SIN_FOTO; };
                     img.className = "w-full h-64 object-contain bg-black rounded snap-center shrink-0";
                     img.onclick = () => {
@@ -300,6 +313,11 @@
                     contenedorFotos.appendChild(img);
                 });
             }
+
+            document.getElementById('detOriginales').innerHTML = fotos
+                .filter(f => typeof f === 'string' && f.startsWith('http'))
+                .map((f, i) => `<a href="${f}" target="_blank" rel="noopener" class="text-blue-600 underline text-xs mr-3"><i class="fa-solid fa-up-right-from-square"></i> Foto ${i + 1} original</a>`)
+                .join('');
 
             document.getElementById('detNombre').innerText = item.NOMBRE;
             document.getElementById('detDatos').innerHTML = `
@@ -469,12 +487,23 @@
 
         function comprimirImagen(file) {
             return new Promise((resolve, reject) => {
+                // Modo "original": se sube el archivo sin recomprimir
+                if (CALIDAD_FOTO.original &&
+                    (file.type === 'image/jpeg' || file.type === 'image/png') &&
+                    file.size <= 12 * 1024 * 1024) {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(new Error("No se pudo leer una de las fotos. Intenta tomarla de nuevo."));
+                    reader.readAsDataURL(file);
+                    return;
+                }
+
                 const url = URL.createObjectURL(file);
                 const img = new Image();
 
                 img.onload = () => {
-                    const MAX_WIDTH = 1000;
-                    const escala = Math.min(1, MAX_WIDTH / img.width); // nunca agrandar
+                    const MAX_LADO = CALIDAD_FOTO.maxLado;
+                    const escala = Math.min(1, MAX_LADO / Math.max(img.width, img.height)); // nunca agrandar
                     const canvas = document.createElement('canvas');
                     canvas.width = Math.round(img.width * escala);
                     canvas.height = Math.round(img.height * escala);
@@ -482,7 +511,7 @@
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                     URL.revokeObjectURL(url);
-                    resolve(canvas.toDataURL('image/jpeg', 0.7));
+                    resolve(canvas.toDataURL('image/jpeg', CALIDAD_FOTO.calidad));
                 };
 
                 img.onerror = () => {
@@ -597,7 +626,7 @@
             return new Promise((resolve) => {
                 const img = new Image();
                 img.onload = () => {
-                    const MAX = 1000;
+                    const MAX = CALIDAD_PDF.maxLado;
                     const esc = Math.min(1, MAX / Math.max(img.width, img.height));
                     const c = document.createElement('canvas');
                     c.width = Math.round(img.width * esc);
@@ -606,7 +635,7 @@
                     ctx.fillStyle = '#ffffff';
                     ctx.fillRect(0, 0, c.width, c.height);
                     ctx.drawImage(img, 0, 0, c.width, c.height);
-                    resolve({ data: c.toDataURL('image/jpeg', 0.8), w: c.width, h: c.height });
+                    resolve({ data: c.toDataURL('image/jpeg', CALIDAD_PDF.calidad), w: c.width, h: c.height });
                 };
                 img.onerror = () => resolve(null);
                 img.src = dataUrl;
@@ -1053,6 +1082,7 @@
                 <!-- Fotos inyectadas -->
             </div>
             <p class="text-[10px] text-center text-gray-500 py-1 bg-gray-100">Desliza para ver más fotos. Toca la foto para ampliar.</p>
+            <div id="detOriginales" class="px-5 pt-3 flex flex-wrap"></div>
 
             <div class="p-5">
                 <h2 id="detNombre" class="text-2xl font-black text-gray-800 mb-4 uppercase"></h2>
