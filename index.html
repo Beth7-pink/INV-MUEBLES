@@ -10,12 +10,14 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <!-- jsPDF para generar PDFs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
     <script>
         // ==========================================
         // CONFIGURACIÓN: REEMPLAZA ESTA URL CON LA TUYA
         // ==========================================
-        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwTi9qfqS0UeWAX7N8asA-qj0BItYL1sDhoTNadx8bDyMAD6ySBm3TIIy2jAN14OuJBKw/exec";
+        const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxG7pPt0ZW6JqgHfNTpUZgsSPUcE2NEfw_TrNnrMeSUoLWDNNNEi5Mbwk6n67L1EMbb6A/exec";
 
         const MAX_FOTOS = 7;
 
@@ -115,8 +117,12 @@
         function cambiarModulo(modulo) {
             document.getElementById('modulo-visualizador').classList.add('hidden');
             document.getElementById('modulo-registro').classList.add('hidden');
+            document.getElementById('modulo-pdf').classList.add('hidden');
 
-            if (modulo === 'visualizador') {
+            if (modulo === 'pdf') {
+                document.getElementById('modulo-pdf').classList.remove('hidden');
+                abrirModuloPDF();
+            } else if (modulo === 'visualizador') {
                 document.getElementById('modulo-visualizador').classList.remove('hidden');
             } else {
                 document.getElementById('modulo-registro').classList.remove('hidden');
@@ -162,6 +168,7 @@
                         <div class="mt-4 flex gap-2">
                             <button onclick="verDetalles(${item.ID}, false)" class="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm shadow hover:bg-blue-700">Ver Detalles</button>
                             <button onclick="prepararEdicion(${item.ID})" class="bg-amber-500 text-white px-3 py-2 rounded-lg shadow hover:bg-amber-600"><i class="fa-solid fa-pen"></i></button>
+                            <button onclick="pdfRapido(${item.ID})" title="Descargar PDF de este registro" class="bg-red-600 text-white px-3 py-2 rounded-lg shadow hover:bg-red-700"><i class="fa-solid fa-file-pdf"></i></button>
                         </div>
                         ` : ''}
                     </div>
@@ -494,6 +501,318 @@
             renderPreviewFotos();
         }
 
+        // ==========================================================
+        // ================= MÓDULO: GENERAR PDF ====================
+        // ==========================================================
+        let seleccionPDF = new Set();
+
+        function abrirModuloPDF() {
+            document.getElementById('pdfBuscar').value = '';
+            seleccionPDF.clear();
+            renderListaPDF();
+        }
+
+        // Todos los registros (inventario + bajas) con una clave única
+        function todosRegistrosPDF() {
+            const lista = inventarioGlobal.map(item => ({ key: 'I-' + item.ID, item, esBaja: false }));
+            bajasGlobal.forEach(item => lista.push({ key: 'B-' + item.ID, item, esBaja: true }));
+            return lista;
+        }
+
+        function registrosPDFVisibles() {
+            const txt = document.getElementById('pdfBuscar').value.toLowerCase().trim();
+            const incluirBajas = document.getElementById('pdfIncluirBajas').checked;
+
+            return todosRegistrosPDF().filter(r => {
+                if (r.esBaja && !incluirBajas) return false;
+                return !txt || String(r.item.NOMBRE).toLowerCase().includes(txt) || String(r.item.ID) === txt;
+            });
+        }
+
+        function renderListaPDF() {
+            const incluirBajas = document.getElementById('pdfIncluirBajas').checked;
+            if (!incluirBajas) {
+                // Si se ocultan las bajas, se quitan de la selección
+                [...seleccionPDF].forEach(k => { if (k.startsWith('B-')) seleccionPDF.delete(k); });
+            }
+
+            const cont = document.getElementById('listaPDF');
+            const visibles = registrosPDFVisibles();
+
+            if (visibles.length === 0) {
+                cont.innerHTML = `<p class="text-center text-gray-400 text-sm py-6">No hay registros para mostrar.</p>`;
+            } else {
+                cont.innerHTML = visibles.map(r => `
+                    <label class="flex items-center gap-3 py-2 cursor-pointer">
+                        <input type="checkbox" class="w-5 h-5 shrink-0" ${seleccionPDF.has(r.key) ? 'checked' : ''}
+                               onchange="togglePDF('${r.key}', this.checked)">
+                        <div class="flex-1 min-w-0">
+                            <p class="font-bold text-sm text-gray-800 uppercase truncate">${r.item.NOMBRE}</p>
+                            <p class="text-xs text-gray-500">ID ${r.item.ID} · ${r.item.MADERA || 'Sin madera'} · Cant: ${r.item.CANTIDAD}${r.esBaja ? ' · <span class="text-red-600 font-bold">BAJA</span>' : ''}</p>
+                        </div>
+                    </label>
+                `).join('');
+            }
+            actualizarContadorPDF();
+        }
+
+        function togglePDF(key, marcado) {
+            if (marcado) seleccionPDF.add(key); else seleccionPDF.delete(key);
+            actualizarContadorPDF();
+        }
+
+        function seleccionarTodosPDF(marcar) {
+            if (marcar) {
+                registrosPDFVisibles().forEach(r => seleccionPDF.add(r.key));
+            } else {
+                seleccionPDF.clear();
+            }
+            renderListaPDF();
+        }
+
+        function actualizarContadorPDF() {
+            const n = seleccionPDF.size;
+            document.getElementById('pdfContador').innerText = n === 1 ? '1 seleccionado' : `${n} seleccionados`;
+        }
+
+        function generarPDFSeleccionados() {
+            if (seleccionPDF.size === 0) {
+                Swal.fire("Nada seleccionado", "Marca al menos un registro para generar el PDF.", "warning");
+                return;
+            }
+            const registros = todosRegistrosPDF().filter(r => seleccionPDF.has(r.key));
+            const soloPrimera = document.getElementById('pdfSoloPrimera').checked;
+            generarPDF(registros, { soloPrimera });
+        }
+
+        // PDF de un solo registro desde la tarjeta
+        function pdfRapido(id) {
+            const item = inventarioGlobal.find(i => i.ID === id);
+            if (!item) return;
+            generarPDF([{ key: 'I-' + id, item, esBaja: false }], { soloPrimera: false });
+        }
+
+        // Convierte cualquier imagen a JPEG normalizado (jsPDF no lee WEBP, etc.)
+        function normalizarImagenPDF(dataUrl) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    const MAX = 1000;
+                    const esc = Math.min(1, MAX / Math.max(img.width, img.height));
+                    const c = document.createElement('canvas');
+                    c.width = Math.round(img.width * esc);
+                    c.height = Math.round(img.height * esc);
+                    const ctx = c.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, c.width, c.height);
+                    ctx.drawImage(img, 0, 0, c.width, c.height);
+                    resolve({ data: c.toDataURL('image/jpeg', 0.8), w: c.width, h: c.height });
+                };
+                img.onerror = () => resolve(null);
+                img.src = dataUrl;
+            });
+        }
+
+        // Devuelve las fotos del registro como data URLs (descarga de Drive las que sean vínculos)
+        async function obtenerFotosParaPDF(item, soloPrimera) {
+            let lista = [item.F1, item.F2, item.F3, item.F4, item.F5, item.F6, item.F7].filter(esFotoValida);
+            if (soloPrimera) lista = lista.slice(0, 1);
+
+            const vinculos = lista.filter(f => !f.startsWith('data:'));
+            let descargadas = [];
+            if (vinculos.length > 0) {
+                try {
+                    const res = await apiCall('getPhotosBase64', { urls: vinculos });
+                    descargadas = (res && res.fotos) || [];
+                } catch (err) {
+                    descargadas = [];
+                }
+            }
+
+            let k = 0;
+            return lista.map(f => f.startsWith('data:') ? f : (descargadas[k++] || ''));
+        }
+
+        // Encabezado + datos del registro. Devuelve la posición Y donde empiezan las fotos.
+        function dibujarRegistroPDF(doc, item, esBaja, M, CW) {
+            doc.setFillColor(29, 78, 216);
+            doc.rect(0, 0, 210, 16, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(12);
+            doc.text('INVENTARIO SILLAS', M, 10.5);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.text('Generado: ' + new Date().toLocaleDateString('es-MX'), M + CW, 10.5, { align: 'right' });
+
+            let y = 27;
+            doc.setTextColor(31, 41, 55);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(18);
+            const nombreLineas = doc.splitTextToSize(String(item.NOMBRE || '').toUpperCase(), CW - 32);
+            doc.text(nombreLineas, M, y);
+            doc.setFontSize(12);
+            doc.text('ID: ' + item.ID, M + CW, y, { align: 'right' });
+            y += nombreLineas.length * 7.5;
+
+            if (esBaja) {
+                doc.setTextColor(220, 38, 38);
+                doc.setFontSize(10);
+                doc.text('NO DISPONIBLE (BAJA)', M, y);
+                y += 6;
+            }
+            y += 2;
+
+            const valor = v => (v === undefined || v === null || v === '') ? '—' : String(v);
+            const dinero = v => valor(v) === '—' ? '—' : '$' + v;
+            const campos = [
+                ['Cantidad', valor(item.CANTIDAD)],
+                ['Madera', valor(item.MADERA)],
+                ['Medidas', valor(item.MEDIDAS)],
+                ['Tela', valor(item.TELA)],
+                ['Precio remate', dinero(item.PRECIO_REMATE)],
+                ['Precio mercado', dinero(item.PRECIO_MERCADO)],
+                ['Fecha de registro', item.FECHA ? formatearFecha(item.FECHA) : '—']
+            ];
+
+            const colW = CW / 2;
+            for (let i = 0; i < campos.length; i += 2) {
+                const fila = campos.slice(i, i + 2);
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(11);
+                const lineas = fila.map(c => doc.splitTextToSize(c[1], colW - 4));
+                const maxL = Math.max(...lineas.map(l => l.length));
+
+                fila.forEach((c, j) => {
+                    const x = M + j * colW;
+                    doc.setFont('helvetica', 'bold');
+                    doc.setFontSize(8);
+                    doc.setTextColor(107, 114, 128);
+                    doc.text(c[0], x, y);
+                    doc.setFont('helvetica', 'normal');
+                    doc.setFontSize(11);
+                    doc.setTextColor(31, 41, 55);
+                    doc.text(lineas[j], x, y + 5);
+                });
+                y += 5 + maxL * 5 + 3;
+            }
+
+            // Notas
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(107, 114, 128);
+            doc.text('Notas', M, y);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(11);
+            doc.setTextColor(31, 41, 55);
+            const notasLineas = doc.splitTextToSize(valor(item.NOTAS), CW);
+            doc.text(notasLineas, M, y + 5);
+            y += 5 + notasLineas.length * 5 + 3;
+
+            doc.setDrawColor(209, 213, 219);
+            doc.line(M, y, M + CW, y);
+            return y + 6;
+        }
+
+        async function generarPDF(registros, opciones = {}) {
+            if (!window.jspdf) {
+                Swal.fire("Error", "No se pudo cargar la librería de PDF. Revisa tu conexión y recarga la página.", "error");
+                return;
+            }
+
+            const soloPrimera = !!opciones.soloPrimera;
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+            const PW = 210, PH = 297, M = 12, CW = PW - 2 * M, GAP = 6;
+            let fotosFallidas = 0;
+
+            try {
+                for (let r = 0; r < registros.length; r++) {
+                    mostrarCarga(true, `Preparando registro ${r + 1} de ${registros.length}...`);
+                    const { item, esBaja } = registros[r];
+
+                    if (r > 0) doc.addPage();
+                    const yInicioFotos = dibujarRegistroPDF(doc, item, esBaja, M, CW);
+
+                    // Fotos
+                    const origenes = await obtenerFotosParaPDF(item, soloPrimera);
+                    const imagenes = [];
+                    for (const o of origenes) {
+                        if (!o) { fotosFallidas++; continue; }
+                        const norm = await normalizarImagenPDF(o);
+                        if (norm) imagenes.push(norm); else fotosFallidas++;
+                    }
+
+                    if (imagenes.length === 0) {
+                        doc.setFont('helvetica', 'italic');
+                        doc.setFontSize(11);
+                        doc.setTextColor(156, 163, 175);
+                        doc.text('Sin fotos disponibles', M, yInicioFotos + 6);
+                        continue;
+                    }
+
+                    // Una sola foto: se muestra grande. Varias: cuadrícula de 2 columnas.
+                    const cols = imagenes.length === 1 ? 1 : 2;
+                    const boxW = (CW - GAP * (cols - 1)) / cols;
+                    const boxH = imagenes.length === 1 ? 120 : 62;
+
+                    let col = 0;
+                    let rowY = yInicioFotos;
+
+                    for (const im of imagenes) {
+                        if (col === 0 && rowY + boxH > PH - M - 8) {
+                            doc.addPage();
+                            rowY = M;
+                        }
+                        const bx = M + col * (boxW + GAP);
+
+                        const esc = Math.min(boxW / im.w, boxH / im.h);
+                        const dw = im.w * esc;
+                        const dh = im.h * esc;
+                        const ox = (boxW - dw) / 2;
+                        const oy = (boxH - dh) / 2;
+
+                        doc.setDrawColor(229, 231, 235);
+                        doc.rect(bx, rowY, boxW, boxH);
+                        doc.addImage(im.data, 'JPEG', bx + ox, rowY + oy, dw, dh);
+
+                        col++;
+                        if (col === cols) {
+                            col = 0;
+                            rowY += boxH + GAP;
+                        }
+                    }
+                }
+
+                // Numeración de páginas
+                const total = doc.getNumberOfPages();
+                for (let p = 1; p <= total; p++) {
+                    doc.setPage(p);
+                    doc.setFont('helvetica', 'normal');
+                    doc.setFontSize(8);
+                    doc.setTextColor(156, 163, 175);
+                    doc.text(`Página ${p} de ${total}`, PW / 2, PH - 6, { align: 'center' });
+                }
+
+                const hoy = new Date().toISOString().split('T')[0];
+                const nombreArchivo = registros.length === 1
+                    ? `Silla_${registros[0].item.ID}_${hoy}.pdf`
+                    : `Inventario_Sillas_${hoy}.pdf`;
+
+                doc.save(nombreArchivo);
+                mostrarCarga(false);
+
+                if (fotosFallidas > 0) {
+                    Swal.fire("PDF generado", `Se descargó el PDF, pero ${fotosFallidas} foto(s) no se pudieron leer de Drive y se omitieron.`, "warning");
+                } else {
+                    Swal.fire("PDF generado", "Tu PDF se descargó correctamente.", "success");
+                }
+            } catch (err) {
+                mostrarCarga(false);
+                Swal.fire("Error al generar el PDF", err.message, "error");
+            }
+        }
+
         function actualizarFiltroMaderas(maderasRegistradas) {
             const selectFilter = document.getElementById('filterMadera');
             let htmlOptions = '<option value="">Cualquier Madera</option>';
@@ -540,6 +859,10 @@
         <button onclick="cambiarModulo('registro')" class="flex flex-col items-center text-gray-500 hover:text-blue-600">
             <i class="fa-solid fa-circle-plus text-2xl"></i>
             <span class="text-xs font-bold mt-1">Nuevo</span>
+        </button>
+        <button onclick="cambiarModulo('pdf')" class="flex flex-col items-center text-gray-500 hover:text-blue-600">
+            <i class="fa-solid fa-file-pdf text-2xl"></i>
+            <span class="text-xs font-bold mt-1">PDF</span>
         </button>
     </nav>
 
@@ -663,6 +986,44 @@
                 Guardar Producto
             </button>
         </form>
+    </div>
+
+    <!-- ================= MODULO 3: GENERAR PDF ================= -->
+    <div id="modulo-pdf" class="hidden p-4 max-w-lg mx-auto">
+
+        <div class="flex items-center mb-6">
+            <button type="button" onclick="cambiarModulo('visualizador')" class="bg-white border border-gray-300 text-gray-700 w-10 h-10 rounded-lg shadow-sm hover:bg-gray-100 flex justify-center items-center">
+                <i class="fa-solid fa-arrow-left"></i>
+            </button>
+            <h1 class="text-xl font-black text-center text-gray-800 flex-1">Generar PDF</h1>
+            <div class="w-10"></div>
+        </div>
+
+        <div class="bg-white p-4 rounded-xl shadow-md flex flex-col gap-3">
+            <input type="text" id="pdfBuscar" oninput="renderListaPDF()" placeholder="Filtrar por nombre o ID..." class="w-full bg-gray-100 border border-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" id="pdfIncluirBajas" onchange="renderListaPDF()" class="w-4 h-4">
+                Incluir bajas (no disponibles)
+            </label>
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" id="pdfSoloPrimera" class="w-4 h-4">
+                Solo la primera foto de cada registro (PDF más rápido y ligero)
+            </label>
+
+            <div class="flex gap-2">
+                <button type="button" onclick="seleccionarTodosPDF(true)" class="flex-1 bg-blue-100 text-blue-700 font-bold py-2 rounded-lg text-sm hover:bg-blue-200">Seleccionar visibles</button>
+                <button type="button" onclick="seleccionarTodosPDF(false)" class="flex-1 bg-gray-100 text-gray-700 font-bold py-2 rounded-lg text-sm hover:bg-gray-200">Quitar selección</button>
+            </div>
+
+            <p id="pdfContador" class="text-xs font-semibold text-gray-500">0 seleccionados</p>
+
+            <div id="listaPDF" class="max-h-[50vh] overflow-y-auto divide-y divide-gray-100 border border-gray-100 rounded-lg px-2"></div>
+
+            <button type="button" onclick="generarPDFSeleccionados()" class="bg-red-600 text-white font-black text-lg py-4 rounded-xl mt-2 shadow-xl hover:bg-red-700 transform active:scale-95 transition-all">
+                <i class="fa-solid fa-file-pdf"></i> Descargar PDF
+            </button>
+        </div>
     </div>
 
     <!-- ================= MODAL CÁMARA BÚSQUEDA ================= -->
